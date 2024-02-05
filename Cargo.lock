@@ -520,7 +520,9 @@ dependencies = [
  "env_logger",
  "log",
  "prost",
+ "slab",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
 ]
