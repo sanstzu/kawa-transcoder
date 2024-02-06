@@ -36,8 +36,38 @@ impl Transcoder for ServerInner {
 
         let mut sessions = self.sessions.write().await;
 
-        let session = Session::new(publish_url);
+        let session = Session::new(publish_url.clone());
         let session_id = sessions.insert(session);
+
+        // Create folder in ./tmp
+        if std::fs::create_dir_all(format!("./tmp/{}", publish_url)).is_err() {
+            return Err(Status::internal("Failed to create folder"));
+        };
+
+        // Create out folder in ./tmp/{publish_url}
+        if std::fs::create_dir_all(format!("./tmp/{}/out", publish_url)).is_err() {
+            return Err(Status::internal("Failed to create out folder"));
+        };
+
+        // Create audio and video name pipe in ./tmp/{publish_url}
+        if std::process::Command::new("mkfifo ./tmp/{publish_url}/raw.aac")
+            .status()
+            .is_err()
+        {
+            return Err(Status::internal("Failed to create audio name pipe"));
+        };
+
+        if std::process::Command::new("mkfifo ./tmp/{publish_url}/raw.h264")
+            .status()
+            .is_err()
+        {
+            return Err(Status::internal("Failed to create video name pipe"));
+        };
+
+        let mut ffmpeg_command = std::process::Command::new("ffmpeg -i ./tmp/{publish_url}/raw.aac -c:a aac -b:a 128k -i ./tmp/{publish_url}/raw.h264 -c:v libx264 -b:v 1M -f hls \"v.m3u8\" & echo $! > ./tmp/{publish_url}/ffmpeg.pid");
+        if ffmpeg_command.spawn().is_err() {
+            return Err(Status::internal("Failed to start ffmpeg"));
+        };
 
         Ok(tonic::Response::new(InitializeSessionResponse {
             session_id: session_id as u64,
@@ -72,6 +102,15 @@ impl Transcoder for ServerInner {
         &self,
         request: Request<CloseSessionRequest>,
     ) -> Result<Response<CloseSessionResponse>, Status> {
-        unimplemented!()
+        let kill_ffmpeg = std::process::Command::new(format!(
+            "kill $(cat ./tmp/{}/ffmpeg.pid)",
+            request.into_inner().session_id
+        ));
+
+        if kill_ffmpeg.status().is_err() {
+            return Err(Status::internal("Failed to kill ffmpeg"));
+        };
+
+        Ok(tonic::Response::new(CloseSessionResponse { status: 0 }))
     }
 }
