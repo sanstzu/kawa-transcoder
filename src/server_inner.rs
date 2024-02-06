@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::sync::Arc;
 
-use log::{info, error};
+use log::{error, info};
 
 use slab::Slab;
 use tokio::sync::RwLock;
@@ -35,14 +35,15 @@ impl Transcoder for ServerInner {
         &self,
         request: Request<InitializeSessionRequest>,
     ) -> Result<Response<InitializeSessionResponse>, Status> {
-        
         let publish_url = request.into_inner().publish_url;
-        info!("Receiving connection initialization for publish_url: {}", publish_url);
+        info!(
+            "Receiving connection initialization for publish_url: {}",
+            publish_url
+        );
 
         let mut sessions = self.sessions.write().await;
 
-        let session = Session::new(publish_url.clone());
-        let session_id = sessions.insert(session);
+        let mut session = Session::new(publish_url.clone());
 
         // Create folder in ./tmp
         if std::fs::create_dir_all(format!("./tmp/{}", publish_url)).is_err() {
@@ -81,12 +82,17 @@ impl Transcoder for ServerInner {
         let audio_arg = format!("./tmp/{publish_url}/raw.aac");
         let video_arg = format!("./tmp/{publish_url}/raw.h264");
         let format_arg = format!("hls \"v.m3u8\"");
-        ffmpeg_command.arg("-re").args(["-i", &audio_arg, "-c:a", "aac" ,"-b:a", "128k"]).args(["-i", &video_arg, "-c:v", "libx264", "-b:v", "1M"]).args(["-f", &format_arg]);
-        
+        ffmpeg_command
+            .arg("-re")
+            .args(["-i", &audio_arg, "-c:a", "aac", "-b:a", "128k"])
+            .args(["-i", &video_arg, "-c:v", "libx264", "-b:v", "1M"])
+            .args(["-f", &format_arg]);
 
         match ffmpeg_command.spawn() {
             Ok(child) => {
-                info!("Starting ffmpeg process with PID: {}", child.id());
+                let pid = child.id();
+                info!("Starting ffmpeg process with PID: {}", pid);
+                session.set_ffmpeg_pid(pid);
             }
             Err(_) => {
                 error!("Failed to start ffmpeg");
@@ -94,6 +100,7 @@ impl Transcoder for ServerInner {
             }
         };
 
+        let session_id = sessions.insert(session);
         Ok(tonic::Response::new(InitializeSessionResponse {
             session_id: session_id as u64,
             status: 0,
@@ -128,10 +135,17 @@ impl Transcoder for ServerInner {
         request: Request<CloseSessionRequest>,
     ) -> Result<Response<CloseSessionResponse>, Status> {
         info!("Closing session");
-        let mut kill_ffmpeg = std::process::Command::new(format!(
-            "kill $(cat ./tmp/{}/ffmpeg.pid)",
-            request.into_inner().session_id
-        ));
+
+        let session_id = request.into_inner().session_id;
+
+        let session = self.sessions.write().await.remove(session_id as usize);
+        let ffmpeg_pid = match session.get_ffmpeg_pid() {
+            Some(pid) => pid,
+            None => return Err(Status::internal("Failed to get ffmpeg pid")),
+        };
+
+        let mut kill_ffmpeg = std::process::Command::new("kill");
+        kill_ffmpeg.arg(ffmpeg_pid.to_string());
 
         if kill_ffmpeg.status().is_err() {
             return Err(Status::internal("Failed to kill ffmpeg"));
