@@ -102,7 +102,7 @@ impl Transcoder for ServerInner {
         &self,
         request: Request<CloseSessionRequest>,
     ) -> Result<Response<CloseSessionResponse>, Status> {
-        let kill_ffmpeg = std::process::Command::new(format!(
+        let mut kill_ffmpeg = std::process::Command::new(format!(
             "kill $(cat ./tmp/{}/ffmpeg.pid)",
             request.into_inner().session_id
         ));
