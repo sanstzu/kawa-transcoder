@@ -1,6 +1,9 @@
 use std::borrow::BorrowMut;
 use std::cell::RefCell;
+use std::fs::{File, OpenOptions};
 use std::sync::Arc;
+
+use log::{info, error};
 
 use slab::Slab;
 use tokio::sync::RwLock;
@@ -32,7 +35,9 @@ impl Transcoder for ServerInner {
         &self,
         request: Request<InitializeSessionRequest>,
     ) -> Result<Response<InitializeSessionResponse>, Status> {
+        
         let publish_url = request.into_inner().publish_url;
+        info!("Receiving connection initialization for publish_url: {}", publish_url);
 
         let mut sessions = self.sessions.write().await;
 
@@ -41,32 +46,52 @@ impl Transcoder for ServerInner {
 
         // Create folder in ./tmp
         if std::fs::create_dir_all(format!("./tmp/{}", publish_url)).is_err() {
+            error!("Failed to create folder");
             return Err(Status::internal("Failed to create folder"));
         };
 
         // Create out folder in ./tmp/{publish_url}
         if std::fs::create_dir_all(format!("./tmp/{}/out", publish_url)).is_err() {
+            error!("Failed to create out folder");
             return Err(Status::internal("Failed to create out folder"));
         };
 
         // Create audio and video name pipe in ./tmp/{publish_url}
-        if std::process::Command::new("mkfifo ./tmp/{publish_url}/raw.aac")
+        let path = format!("./tmp/{publish_url}/raw.aac");
+        if std::process::Command::new("mkfifo")
+            .arg(path)
             .status()
             .is_err()
         {
-            return Err(Status::internal("Failed to create audio name pipe"));
+            error!("Failed to craete audio named pipe");
+            return Err(Status::internal("Failed to create audio named pipe"));
         };
 
-        if std::process::Command::new("mkfifo ./tmp/{publish_url}/raw.h264")
+        let path = format!("./tmp/{publish_url}/raw.h264");
+        if std::process::Command::new("mkfifo")
+            .arg(path)
             .status()
             .is_err()
         {
-            return Err(Status::internal("Failed to create video name pipe"));
+            error!("Failed to create video named pipe");
+            return Err(Status::internal("Failed to create video named pipe"));
         };
 
-        let mut ffmpeg_command = std::process::Command::new("ffmpeg -i ./tmp/{publish_url}/raw.aac -c:a aac -b:a 128k -i ./tmp/{publish_url}/raw.h264 -c:v libx264 -b:v 1M -f hls \"v.m3u8\" & echo $! > ./tmp/{publish_url}/ffmpeg.pid");
-        if ffmpeg_command.spawn().is_err() {
-            return Err(Status::internal("Failed to start ffmpeg"));
+        let mut ffmpeg_command = std::process::Command::new("ffmpeg");
+        let audio_arg = format!("./tmp/{publish_url}/raw.aac");
+        let video_arg = format!("./tmp/{publish_url}/raw.h264");
+        let format_arg = format!("hls \"v.m3u8\"");
+        ffmpeg_command.arg("-re").args(["-i", &audio_arg, "-c:a", "aac" ,"-b:a", "128k"]).args(["-i", &video_arg, "-c:v", "libx264", "-b:v", "1M"]).args(["-f", &format_arg]);
+        
+
+        match ffmpeg_command.spawn() {
+            Ok(child) => {
+                info!("Starting ffmpeg process with PID: {}", child.id());
+            }
+            Err(_) => {
+                error!("Failed to start ffmpeg");
+                return Err(Status::internal("Failed to start ffmpeg"));
+            }
         };
 
         Ok(tonic::Response::new(InitializeSessionResponse {
@@ -80,7 +105,7 @@ impl Transcoder for ServerInner {
         request: Request<Streaming<StreamSessionData>>,
     ) -> Result<Response<StreamSessionResponse>, Status> {
         let mut in_stream = request.into_inner();
-
+        info!("Starting stream session");
         tokio::spawn(async move {
             while let Some(data) = in_stream.next().await {
                 match data {
@@ -102,6 +127,7 @@ impl Transcoder for ServerInner {
         &self,
         request: Request<CloseSessionRequest>,
     ) -> Result<Response<CloseSessionResponse>, Status> {
+        info!("Closing session");
         let mut kill_ffmpeg = std::process::Command::new(format!(
             "kill $(cat ./tmp/{}/ffmpeg.pid)",
             request.into_inner().session_id
