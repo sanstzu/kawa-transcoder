@@ -158,51 +158,75 @@ impl Transcoder for ServerInner {
 
         let publish_url = session.get_publish_url().to_string();
 
-        let audio_file = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(format!("./tmp/{}/raw.aac", publish_url))
-            .await;
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (video_tx, video_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-        let audio_file = match audio_file {
-            Ok(file) => file,
-            Err(_) => {
-                error!("Failed to open audio file");
-                return Err(Status::internal("Failed to open audio file"));
+        let url = publish_url.clone();
+        tokio::spawn(async move {
+            let mut rx = audio_rx;
+            let audio_file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(format!("./tmp/{}/raw.aac", url))
+                .await;
+
+            let mut audio_file = match audio_file {
+                Ok(file) => file,
+                Err(_) => {
+                    return error!("Failed to open audio file");
+                }
+            };
+
+            while let Some(data) = rx.recv().await {
+                if audio_file.write_all(&data).await.is_err() {
+                    error!("Failed to write audio data");
+                    return;
+                }
             }
-        };
+        });
 
-        let video_file = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(format!("./tmp/{}/raw.h264", publish_url))
-            .await;
+        let url = publish_url.clone();
+        tokio::spawn(async move {
+            let mut rx = video_rx;
+            let video_file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(format!("./tmp/{}/raw.h264", url))
+                .await;
 
-        let video_file = match video_file {
-            Ok(file) => file,
-            Err(_) => {
-                error!("Failed to open video file");
-                return Err(Status::internal("Failed to open video file"));
+            let mut video_file = match video_file {
+                Ok(file) => file,
+                Err(_) => {
+                    error!("Failed to open video file");
+                    return;
+                }
+            };
+
+            while let Some(data) = rx.recv().await {
+                if video_file.write_all(&data).await.is_err() {
+                    error!("Failed to write video data");
+                    return;
+                }
             }
-        };
+        });
 
         tokio::spawn(async move {
             let mut stream = in_stream;
 
-            let mut video_file = video_file;
-            let mut audio_file = audio_file;
+            let v_tx = video_tx;
+            let a_tx = audio_tx;
 
             while let Some(data) = (&mut stream).next().await {
                 match data {
                     Ok(cur_data) => match cur_data.r#type {
                         0 => {
-                            if (&mut video_file).write_all(&cur_data.data).await.is_err() {
+                            if v_tx.send(cur_data.data).is_err() {
                                 error!("Failed to write audio data");
                                 return;
                             }
                         }
                         1 => {
-                            if (&mut audio_file).write_all(&cur_data.data).await.is_err() {
+                            if a_tx.send(cur_data.data).is_err() {
                                 error!("Failed to write video data");
                                 return;
                             }
