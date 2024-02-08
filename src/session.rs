@@ -20,6 +20,10 @@ impl Session {
     pub fn set_ffmpeg_pid(&mut self, pid: u32) {
         self.ffmpeg_pid = Some(pid);
     }
+
+    pub fn get_publish_url(&self) -> &str {
+        &self.publish_url
+    }
 }
 
 enum Status {
