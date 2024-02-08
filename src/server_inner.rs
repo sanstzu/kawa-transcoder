@@ -1,18 +1,20 @@
 use std::borrow::BorrowMut;
 use std::cell::RefCell;
-use std::fs::{File, OpenOptions};
 use std::sync::Arc;
+use tokio::fs::{create_dir_all, File, OpenOptions};
+use tokio::process;
 
 use log::{error, info};
 
 use slab::Slab;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 use crate::service::{
     transcoder_server::Transcoder, InitializeSessionRequest, InitializeSessionResponse,
     StreamSessionData, StreamSessionResponse,
 };
-use crate::service::{CloseSessionRequest, CloseSessionResponse};
+use crate::service::{CloseSessionRequest, CloseSessionResponse, StreamDataType};
 use crate::session::Session;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
@@ -46,22 +48,29 @@ impl Transcoder for ServerInner {
         let mut session = Session::new(publish_url.clone());
 
         // Create folder in ./tmp
-        if std::fs::create_dir_all(format!("./tmp/{}", publish_url)).is_err() {
+        if create_dir_all(format!("./tmp/{}", publish_url))
+            .await
+            .is_err()
+        {
             error!("Failed to create folder");
             return Err(Status::internal("Failed to create folder"));
         };
 
         // Create out folder in ./tmp/{publish_url}
-        if std::fs::create_dir_all(format!("./tmp/{}/out", publish_url)).is_err() {
+        if create_dir_all(format!("./tmp/{}/out", publish_url))
+            .await
+            .is_err()
+        {
             error!("Failed to create out folder");
             return Err(Status::internal("Failed to create out folder"));
         };
 
         // Create audio and video name pipe in ./tmp/{publish_url}
         let path = format!("./tmp/{publish_url}/raw.aac");
-        if std::process::Command::new("mkfifo")
+        if process::Command::new("mkfifo")
             .arg(path)
             .status()
+            .await
             .is_err()
         {
             error!("Failed to craete audio named pipe");
@@ -69,16 +78,17 @@ impl Transcoder for ServerInner {
         };
 
         let path = format!("./tmp/{publish_url}/raw.h264");
-        if std::process::Command::new("mkfifo")
+        if process::Command::new("mkfifo")
             .arg(path)
             .status()
+            .await
             .is_err()
         {
             error!("Failed to create video named pipe");
             return Err(Status::internal("Failed to create video named pipe"));
         };
 
-        let mut ffmpeg_command = std::process::Command::new("ffmpeg");
+        let mut ffmpeg_command = process::Command::new("ffmpeg");
         let audio_arg = format!("./tmp/{publish_url}/raw.aac");
         let video_arg = format!("./tmp/{publish_url}/raw.h264");
         let format_arg = format!("hls \"v.m3u8\"");
@@ -90,7 +100,13 @@ impl Transcoder for ServerInner {
 
         match ffmpeg_command.spawn() {
             Ok(child) => {
-                let pid = child.id();
+                let pid = match child.id() {
+                    Some(pid) => pid,
+                    None => {
+                        error!("Failed to get ffmpeg PID");
+                        return Err(Status::internal("Failed to get ffmpeg PID"));
+                    }
+                };
                 info!("Starting ffmpeg process with PID: {}", pid);
                 session.set_ffmpeg_pid(pid);
             }
@@ -113,15 +129,92 @@ impl Transcoder for ServerInner {
     ) -> Result<Response<StreamSessionResponse>, Status> {
         let mut in_stream = request.into_inner();
         info!("Starting stream session");
+
+        let first_iter = in_stream.next().await;
+
+        let data = match first_iter {
+            None => {
+                error!("Connection closed before receiving any data");
+                return Err(Status::internal(
+                    "Connection closed before receiving any data",
+                ));
+            }
+            Some(Ok(data)) => data,
+            Some(Err(_)) => {
+                error!("Failed to receive first data");
+                return Err(Status::internal("Failed to receive first data"));
+            }
+        };
+
+        let session_tmp = self.sessions.read().await;
+
+        let session = match session_tmp.get(data.session_id as usize) {
+            Some(session) => session,
+            None => {
+                error!("Session not found");
+                return Err(Status::internal("Session not found"));
+            }
+        };
+
+        let publish_url = session.get_publish_url().to_string();
+
+        let audio_file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(format!("./tmp/{}/raw.aac", publish_url))
+            .await;
+
+        let audio_file = match audio_file {
+            Ok(file) => file,
+            Err(_) => {
+                error!("Failed to open audio file");
+                return Err(Status::internal("Failed to open audio file"));
+            }
+        };
+
+        let video_file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(format!("./tmp/{}/raw.h264", publish_url))
+            .await;
+
+        let video_file = match video_file {
+            Ok(file) => file,
+            Err(_) => {
+                error!("Failed to open video file");
+                return Err(Status::internal("Failed to open video file"));
+            }
+        };
+
         tokio::spawn(async move {
-            while let Some(data) = in_stream.next().await {
+            let mut stream = in_stream;
+
+            let mut video_file = video_file;
+            let mut audio_file = audio_file;
+
+            while let Some(data) = (&mut stream).next().await {
                 match data {
-                    Ok(data) => {
-                        println!("Received data: {:?}", data.r#type);
-                    }
-                    Err(e) => {
-                        eprintln!("Error receiving stream: {:?}", e);
-                        break;
+                    Ok(cur_data) => match cur_data.r#type {
+                        0 => {
+                            if (&mut video_file).write_all(&cur_data.data).await.is_err() {
+                                error!("Failed to write audio data");
+                                return;
+                            }
+                        }
+                        1 => {
+                            if (&mut audio_file).write_all(&cur_data.data).await.is_err() {
+                                error!("Failed to write video data");
+                                return;
+                            }
+                        }
+                        _ => {
+                            error!("Received data with unknown type");
+                            return;
+                        }
+                    },
+                    Err(_) => {
+                        error!("Failed to receive data");
+                        return;
                     }
                 }
             }
@@ -144,10 +237,10 @@ impl Transcoder for ServerInner {
             None => return Err(Status::internal("Failed to get ffmpeg pid")),
         };
 
-        let mut kill_ffmpeg = std::process::Command::new("kill");
+        let mut kill_ffmpeg = process::Command::new("kill");
         kill_ffmpeg.arg(ffmpeg_pid.to_string());
 
-        if kill_ffmpeg.status().is_err() {
+        if kill_ffmpeg.status().await.is_err() {
             return Err(Status::internal("Failed to kill ffmpeg"));
         };
 

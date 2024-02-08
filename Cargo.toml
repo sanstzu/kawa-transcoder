@@ -12,7 +12,7 @@ libc = "0.2.153"
 log = "0.4.20"
 prost = "0.12.3"
 slab = "0.4.9"
-tokio = { version = "1.36.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.36.0", features = ["macros", "rt-multi-thread", "fs", "process"] }
 tokio-stream = "0.1.14"
 tonic = "0.10.2"
 
