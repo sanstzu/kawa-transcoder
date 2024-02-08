@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
 use tokio::process;
 
-use log::{error, info};
+use log::{error, info, trace};
 
 use slab::Slab;
 use tokio::io::AsyncWriteExt;
@@ -169,6 +169,20 @@ impl Transcoder for ServerInner {
         let (audio_tx, audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let (video_tx, video_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
+        match data.r#type {
+            1 => {
+                trace!("first data is video");
+                (&video_tx).send(data.data);
+            }
+            2 => {
+                trace!("first data is audio");
+                (&audio_tx).send(data.data);
+            }
+            _ => {
+                error!("Unknown data received");
+            }
+        };
+
         let url = publish_url.clone();
         tokio::spawn(async move {
             let mut rx = audio_rx;
@@ -184,6 +198,8 @@ impl Transcoder for ServerInner {
                     return error!("Failed to open audio file");
                 }
             };
+
+            trace!("Audio file writer has been started");
 
             while let Some(data) = rx.recv().await {
                 if audio_file.write_all(&data).await.is_err() {
@@ -210,6 +226,8 @@ impl Transcoder for ServerInner {
                 }
             };
 
+            trace!("Video file writer has been started");
+
             while let Some(data) = rx.recv().await {
                 if video_file.write_all(&data).await.is_err() {
                     error!("Failed to write video data");
@@ -227,21 +245,22 @@ impl Transcoder for ServerInner {
             while let Some(data) = (&mut stream).next().await {
                 match data {
                     Ok(cur_data) => match cur_data.r#type {
-                        0 => {
+                        1 => {
+                            trace!("Received video data");
                             if v_tx.send(cur_data.data).is_err() {
                                 error!("Failed to write audio data");
                                 return;
                             }
                         }
-                        1 => {
+                        2 => {
+                            trace!("Received audio data");
                             if a_tx.send(cur_data.data).is_err() {
                                 error!("Failed to write video data");
                                 return;
                             }
                         }
                         _ => {
-                            error!("Received data with unknown type");
-                            return;
+                            error!("Received data with unknown type: {}", cur_data.r#type);
                         }
                     },
                     Err(_) => {
