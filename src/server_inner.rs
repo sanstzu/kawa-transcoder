@@ -1,7 +1,7 @@
 use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::sync::Arc;
-use tokio::fs::{create_dir_all, File, OpenOptions};
+use tokio::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
 use tokio::process;
 
 use log::{error, info};
@@ -46,6 +46,14 @@ impl Transcoder for ServerInner {
         let mut sessions = self.sessions.write().await;
 
         let mut session = Session::new(publish_url.clone());
+
+        // Clear folder in ./tmp
+        if remove_dir_all(format!("./tmp/{}", publish_url))
+            .await
+            .is_err()
+        {
+            error!("Failed to remove folder");
+        }
 
         // Create folder in ./tmp
         if create_dir_all(format!("./tmp/{}", publish_url))
