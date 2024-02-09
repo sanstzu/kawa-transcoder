@@ -47,36 +47,25 @@ impl Transcoder for ServerInner {
 
         let mut session = Session::new(publish_url.clone());
 
-        // Clear folder in ./tmp
-        if remove_dir_all(format!("./tmp/{}", publish_url))
-            .await
-            .is_err()
-        {
-            error!("Failed to remove folder");
-        }
+        let pipe_path = format!("./tmp/pipe/{}", publish_url);
+        let out_path = format!("./tmp/out/{}", publish_url);
 
         // Create folder in ./tmp/pipe/{}
-        if create_dir_all(format!("./tmp/pipe/{}", publish_url))
-            .await
-            .is_err()
-        {
+        if create_dir_all(&pipe_path).await.is_err() {
             error!("Failed to create folder");
             return Err(Status::internal("Failed to create folder"));
         };
 
         // Create out folder in ./tmp/out/{publish_url}
-        if create_dir_all(format!("./tmp/out/{}", publish_url))
-            .await
-            .is_err()
-        {
+        if create_dir_all(&out_path).await.is_err() {
             error!("Failed to create out folder");
             return Err(Status::internal("Failed to create out folder"));
         };
 
         // Create audio and video name pipe in ./tmp/{publish_url}
-        let path = format!("./tmp/pipe/{publish_url}/raw.aac");
+        let video_pipe_path = format!("{pipe_path}/raw.aac");
         if process::Command::new("mkfifo")
-            .arg(path)
+            .arg(&video_pipe_path)
             .status()
             .await
             .is_err()
@@ -85,9 +74,9 @@ impl Transcoder for ServerInner {
             return Err(Status::internal("Failed to create audio named pipe"));
         };
 
-        let path = format!("./tmp/pipe/{publish_url}/raw.h264");
+        let audio_pipe_path = format!("{pipe_path}/raw.h264");
         if process::Command::new("mkfifo")
-            .arg(path)
+            .arg(&audio_pipe_path)
             .status()
             .await
             .is_err()
@@ -97,15 +86,21 @@ impl Transcoder for ServerInner {
         };
 
         let mut ffmpeg_command = process::Command::new("ffmpeg");
-        let audio_arg = format!("./tmp/{publish_url}/raw.aac");
-        let video_arg = format!("./tmp/{publish_url}/raw.h264");
-        let format_arg = format!("hls");
+        let audio_arg = &audio_pipe_path;
+        let video_arg = &video_pipe_path;
         ffmpeg_command
             .arg("-re")
-            .args(["-i", &video_arg])
-            .args(["-i", &audio_arg])
-            .args(["-f", "hls", "-hls_segment_filename", "file%05d.ts"])
-            .arg(format!("./tmp/out/{publish_url}/out.m3u8"));
+            .args(["-thread_queue_size", "1024", "-i", &audio_arg])
+            .args(["-thread_queue_size", "1024", "-i", &video_arg])
+            .args([
+                "-f",
+                "hls",
+                "-hls_segment_filename",
+                &format!("{out_path}/file%05d.ts"),
+                "-preset",
+                "veryfast",
+                &format!("{out_path}/out.m3u8"),
+            ]);
 
         match ffmpeg_command.spawn() {
             Ok(child) => {
