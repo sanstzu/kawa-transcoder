@@ -55,8 +55,8 @@ impl Transcoder for ServerInner {
             error!("Failed to remove folder");
         }
 
-        // Create folder in ./tmp
-        if create_dir_all(format!("./tmp/{}", publish_url))
+        // Create folder in ./tmp/pipe/{}
+        if create_dir_all(format!("./tmp/pipe/{}", publish_url))
             .await
             .is_err()
         {
@@ -64,8 +64,8 @@ impl Transcoder for ServerInner {
             return Err(Status::internal("Failed to create folder"));
         };
 
-        // Create out folder in ./tmp/{publish_url}
-        if create_dir_all(format!("./tmp/{}/out", publish_url))
+        // Create out folder in ./tmp/out/{publish_url}
+        if create_dir_all(format!("./tmp/out/{}", publish_url))
             .await
             .is_err()
         {
@@ -74,18 +74,18 @@ impl Transcoder for ServerInner {
         };
 
         // Create audio and video name pipe in ./tmp/{publish_url}
-        let path = format!("./tmp/{publish_url}/raw.aac");
+        let path = format!("./tmp/pipe/{publish_url}/raw.aac");
         if process::Command::new("mkfifo")
             .arg(path)
             .status()
             .await
             .is_err()
         {
-            error!("Failed to craete audio named pipe");
+            error!("Failed to create audio named pipe");
             return Err(Status::internal("Failed to create audio named pipe"));
         };
 
-        let path = format!("./tmp/{publish_url}/raw.h264");
+        let path = format!("./tmp/pipe/{publish_url}/raw.h264");
         if process::Command::new("mkfifo")
             .arg(path)
             .status()
@@ -99,12 +99,13 @@ impl Transcoder for ServerInner {
         let mut ffmpeg_command = process::Command::new("ffmpeg");
         let audio_arg = format!("./tmp/{publish_url}/raw.aac");
         let video_arg = format!("./tmp/{publish_url}/raw.h264");
-        let format_arg = format!("hls \"v.m3u8\"");
+        let format_arg = format!("hls");
         ffmpeg_command
             .arg("-re")
-            .args(["-i", &audio_arg, "-c:a", "aac", "-b:a", "128k"])
-            .args(["-i", &video_arg, "-c:v", "libx264", "-b:v", "1M"])
-            .args(["-f", &format_arg]);
+            .args(["-i", &video_arg])
+            .args(["-i", &audio_arg])
+            .args(["-f", "hls", "-hls_segment_filename", "file%05d.ts"])
+            .arg(format!("./tmp/out/{publish_url}/out.m3u8"));
 
         match ffmpeg_command.spawn() {
             Ok(child) => {
@@ -170,13 +171,15 @@ impl Transcoder for ServerInner {
         let (video_tx, video_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
         match data.r#type {
-            1 => {
-                trace!("first data is video");
-                (&video_tx).send(data.data);
-            }
             2 => {
-                trace!("first data is audio");
-                (&audio_tx).send(data.data);
+                if (&video_tx).send(data.data).is_err() {
+                    error!("Failed to send first data");
+                }
+            }
+            1 => {
+                if (&audio_tx).send(data.data).is_err() {
+                    error!("Failed to send first data");
+                };
             }
             _ => {
                 error!("Unknown data received");
@@ -189,7 +192,7 @@ impl Transcoder for ServerInner {
             let audio_file = OpenOptions::new()
                 .write(true)
                 .append(true)
-                .open(format!("./tmp/{}/raw.aac", url))
+                .open(format!("./tmp/pipe/{}/raw.aac", url))
                 .await;
 
             let mut audio_file = match audio_file {
@@ -202,6 +205,7 @@ impl Transcoder for ServerInner {
             trace!("Audio file writer has been started");
 
             while let Some(data) = rx.recv().await {
+                //trace!("Consuming audio");
                 if audio_file.write_all(&data).await.is_err() {
                     error!("Failed to write audio data");
                     return;
@@ -215,7 +219,7 @@ impl Transcoder for ServerInner {
             let video_file = OpenOptions::new()
                 .write(true)
                 .append(true)
-                .open(format!("./tmp/{}/raw.h264", url))
+                .open(format!("./tmp/pipe/{}/raw.h264", url))
                 .await;
 
             let mut video_file = match video_file {
@@ -229,6 +233,7 @@ impl Transcoder for ServerInner {
             trace!("Video file writer has been started");
 
             while let Some(data) = rx.recv().await {
+                //trace!("Consuming video");
                 if video_file.write_all(&data).await.is_err() {
                     error!("Failed to write video data");
                     return;
@@ -245,15 +250,13 @@ impl Transcoder for ServerInner {
             while let Some(data) = (&mut stream).next().await {
                 match data {
                     Ok(cur_data) => match cur_data.r#type {
-                        1 => {
-                            trace!("Received video data");
+                        2 => {
                             if v_tx.send(cur_data.data).is_err() {
                                 error!("Failed to write audio data");
                                 return;
                             }
                         }
-                        2 => {
-                            trace!("Received audio data");
+                        1 => {
                             if a_tx.send(cur_data.data).is_err() {
                                 error!("Failed to write video data");
                                 return;
@@ -269,7 +272,8 @@ impl Transcoder for ServerInner {
                     }
                 }
             }
-        });
+        })
+        .await;
 
         Ok(tonic::Response::new(StreamSessionResponse { status: 0 }))
     }
