@@ -93,10 +93,18 @@ impl Transcoder for ServerInner {
             .args(["-thread_queue_size", "1024", "-i", &audio_arg])
             .args(["-thread_queue_size", "1024", "-i", &video_arg])
             .args([
+                "-force_key_frames:v",
+                "expr:gte(t,n_forced*5)",
                 "-f",
                 "hls",
+                "-hls_time",
+                "5",
+                "-hls_list_size",
+                "10",
                 "-hls_segment_filename",
                 &format!("{out_path}/file%05d.ts"),
+                "-hls_flags",
+                "append_list+delete_segments+omit_endlist",
                 "-preset",
                 "veryfast",
                 &format!("{out_path}/out.m3u8"),
