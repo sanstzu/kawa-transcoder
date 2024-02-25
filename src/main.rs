@@ -1,7 +1,4 @@
-use std::{
-    env,
-    net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs},
-};
+use std::{env, net::ToSocketAddrs};
 
 use dotenv::dotenv;
 use log::{error, info};

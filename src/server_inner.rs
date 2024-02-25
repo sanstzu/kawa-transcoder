@@ -1,7 +1,5 @@
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
 use std::sync::Arc;
-use tokio::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
+use tokio::fs::{create_dir_all, OpenOptions};
 use tokio::process;
 
 use log::{error, info, trace};
@@ -14,7 +12,7 @@ use crate::service::{
     transcoder_server::Transcoder, InitializeSessionRequest, InitializeSessionResponse,
     StreamSessionData, StreamSessionResponse,
 };
-use crate::service::{CloseSessionRequest, CloseSessionResponse, StreamDataType};
+use crate::service::{CloseSessionRequest, CloseSessionResponse};
 use crate::session::Session;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
@@ -244,7 +242,7 @@ impl Transcoder for ServerInner {
             }
         });
 
-        tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             let mut stream = in_stream;
 
             let v_tx = video_tx;
