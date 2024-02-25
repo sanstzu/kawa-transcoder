@@ -9,7 +9,7 @@ WORKDIR /usr/src/app
 
 COPY . .
 
-RUN ["cargo", "build", "--release"]
+RUN ["cargo", "build"]
 
 RUN ["chmod", "+x", "entrypoint.sh"]
 
