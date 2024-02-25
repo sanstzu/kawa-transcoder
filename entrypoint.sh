@@ -9,4 +9,4 @@ aws configure import --csv file://credentials.csv
 # Validate aws identity
 aws sts get-caller-identity > /dev/null
 
-cargo run
+cargo run --release

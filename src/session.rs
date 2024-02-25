@@ -1,5 +1,6 @@
 pub struct Session {
     publish_url: String,
+    #[allow(dead_code)]
     status: Status,
     ffmpeg_pid: Option<u32>,
 }
@@ -26,6 +27,7 @@ impl Session {
     }
 }
 
+#[allow(dead_code)]
 enum Status {
     Initialized,
     Streaming,
