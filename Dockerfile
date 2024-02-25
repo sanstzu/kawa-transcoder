@@ -16,3 +16,5 @@ RUN ["chmod", "+x", "entrypoint.sh"]
 EXPOSE 50051
 
 ENTRYPOINT ["./entrypoint.sh"]
+
+CMD ["cargo", "run", "--release"]
